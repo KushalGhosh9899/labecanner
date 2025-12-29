@@ -15,59 +15,83 @@ logger = logging.getLogger('scanner')
 
 @csrf_exempt
 def analyze_label_api(request):
-    if request.method == 'POST':
-        image_file = request.FILES.get('image')
-        if not image_file:
-            return JsonResponse({"error": "No image provided"}, status=400)
+    if request.method != 'POST':
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    image_file = request.FILES.get('image')
+    if not image_file:
+        return JsonResponse({"error": "No image provided"}, status=400)
+
+    try:
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        image_bytes = image_file.read()
+        
+        prompt = """
+        Analyze this product label image.
+        1. Identify the 'category'.
+        2. List all 'ingredients' found.
+
+        Return ONLY a JSON object:
+        {
+            "category": "string or 'unknown'",
+            "ingredients": ["list", "of", "strings"],
+            "found": boolean
+        }
+
+        If no text or label is found, set "found" to false and return empty values.
+        """
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
+                prompt
+            ]
+        )
+
+        if not response.candidates or response.candidates[0].finish_reason == "SAFETY":
+            return JsonResponse({
+                "error": "CONTENT_BLOCKED",
+                "message": "The image was flagged by safety filters. Please upload a clear product label."
+            }, status=422)
+
+        raw_text = response.text.strip() if response.text else ""
+        
+        if not raw_text:
+            return JsonResponse({
+                "error": "EMPTY_RESPONSE",
+                "message": "The AI could not read any text from this image."
+            }, status=422)
+
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
 
         try:
-            # New SDK Client
-            client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+            data = json.loads(raw_text)
             
-            # Convert uploaded file to bytes for the new SDK
-            image_bytes = image_file.read()
-            
-            prompt = """
-            Analyze this product label image.
-            Return a JSON object with:
-            - "category": The product type.
-            - "ingredients": A clean list of all ingredient names.
-            Strictly return ONLY the JSON.
-            """
-
-            # New generate_content syntax
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
-                    prompt
-                ]
-            )
-            
-            # Extract text and handle potential markdown blocks
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
-            return JsonResponse(json.loads(raw_text), safe=False)
-
-        except ClientError as e:
-            if e.code == 429 or "429" in str(e):
-                logger.error(f"Gemini Quota Exceeded (Captured via ClientError): {str(e)}")
+            # Check the "found" flag we added to the prompt
+            if data.get("found") is False or not data.get("ingredients"):
                 return JsonResponse({
-                    "code": "LIMIT_REACHED",
-                    "message": "We are receiving too many requests. Please wait a minute and try again."
-                }, status=429)
-            
-            logger.error(f"Gemini Client Error: {str(e)}")
-            return JsonResponse({"error": "Request failed"}, status=400)
+                    "error": "NO_INGREDIENTS_DETECTED",
+                    "message": "No ingredients were found in this image. Try a closer, clearer shot."
+                }, status=422)
 
-        except Exception as e:
-            logger.error(f"Unexpected System Error: {str(e)}")
-            return JsonResponse({"error": "Internal server error"}, status=500)
-        
-    return JsonResponse({"error": "POST only"}, status=405)
+            return JsonResponse(data, safe=False)
 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON Parse Error: {str(e)} | Raw: {raw_text}")
+            return JsonResponse({"error": "AI returned invalid format"}, status=500)
+
+    except ClientError as e:
+        if "429" in str(e):
+            return JsonResponse({"error": "Rate limit exceeded. Try again in 30s."}, status=429)
+        logger.error(f"Gemini Client Error: {str(e)}")
+        return JsonResponse({"error": "External API error"}, status=400)
+
+    except Exception as e:
+        logger.error(f"Unexpected System Error: {str(e)}")
+        return JsonResponse({"error": "Internal server error"}, status=500)
+    
 @csrf_exempt
 def analyze_ingredients_api(request):
     if request.method != 'POST':
