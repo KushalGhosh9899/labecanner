@@ -12,3 +12,6 @@ Pillow==11.0.0
 
 # Environment Variables
 python-dotenv==1.0.1
+
+dj-database-url==2.1.0
+gunicorn==21.2.0
