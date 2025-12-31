@@ -200,8 +200,15 @@ def scanner_pipeline_api(request):
             )
         )
 
-        # Return the final safety report
-        return JsonResponse(json.loads(analysis_resp.text), safe=False)
+        # Parse the AI response
+        report_data = json.loads(analysis_resp.text)
+
+        # Sort the 'analysis' list by 'riskScore' in descending order
+        if 'analysis' in report_data:
+            report_data['analysis'].sort(key=lambda x: x.get('riskScore', 0), reverse=True)
+
+        # Return the sorted safety report
+        return JsonResponse(report_data, safe=False)
 
     except ClientError as e:
         if "429" in str(e):
@@ -211,3 +218,4 @@ def scanner_pipeline_api(request):
     except Exception as e:
         logger.error(f"Pipeline Crash: {str(e)}")
         return JsonResponse({"error": "Internal server error"}, status=500)
+    
