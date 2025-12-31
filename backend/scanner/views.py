@@ -205,9 +205,9 @@ def scanner_pipeline_api(request):
 
     except ClientError as e:
         if "429" in str(e):
-            return JsonResponse({"error": "Rate limit reached. Try again in 30s."}, status=429)
+            return JsonResponse({"error": "Rate limit reached. Try again in 1 min."}, status=429)
         logger.error(f"Gemini API Error: {str(e)}")
-        return JsonResponse({"error": "API Error during pipeline"}, status=400)
+        return JsonResponse({"error": "Something went wrong."}, status=400)
     except Exception as e:
         logger.error(f"Pipeline Crash: {str(e)}")
         return JsonResponse({"error": "Internal server error"}, status=500)
