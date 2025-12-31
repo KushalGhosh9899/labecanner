@@ -1,0 +1,173 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<style>
+    /* Mobile-First UI Tweeks */
+    .scanner-card {
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        border: 2px dashed #dee2e6;
+        cursor: pointer;
+    }
+    .scanner-card:active {
+        transform: scale(0.98);
+        background-color: #f8f9fa;
+    }
+    .icon-circle {
+        width: 80px;
+        height: 80px;
+        background: #e7f1ff;
+        color: #0d6efd;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 15px;
+        font-size: 2rem;
+    }
+    .ingredient-card {
+        border-left: 5px solid #dee2e6;
+    }
+    .risk-high { border-left-color: #dc3545; }
+    .risk-low { border-left-color: #198754; }
+    
+    #loader {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 1000;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 2rem;
+        border-radius: 15px;
+        text-align: center;
+    }
+</style>
+
+<div class="container py-4">
+    <div class="text-center mb-5">
+        <h2 class="fw-bold">Label Scanner</h2>
+        <p class="text-muted">Check ingredients for safety instantly</p>
+    </div>
+
+    <div class="row g-3 mb-5">
+        <div class="col-6">
+            <div class="card h-100 scanner-card p-3 text-center" onclick="document.getElementById('cameraInput').click()">
+                <div class="icon-circle">📸</div>
+                <h6 class="fw-bold mb-1">Camera</h6>
+                <small class="text-muted">Take photo</small>
+                <input type="file" id="cameraInput" accept="image/*" capture="environment" class="d-none" onchange="processImage(this)">
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="card h-100 scanner-card p-3 text-center" onclick="document.getElementById('galleryInput').click()">
+                <div class="icon-circle">🖼️</div>
+                <h6 class="fw-bold mb-1">Gallery</h6>
+                <small class="text-muted">Upload file</small>
+                <input type="file" id="galleryInput" accept="image/*" class="d-none" onchange="processImage(this)">
+            </div>
+        </div>
+    </div>
+
+    <div id="loader" class="d-none shadow">
+        <div class="spinner-border text-primary mb-3" role="status"></div>
+        <h6 class="d-block">Analyzing via Gemini AI...</h6>
+        <small class="text-muted">This takes about 5-8 seconds</small>
+    </div>
+
+    <div id="results" class="d-none">
+        <div class="card border-0 shadow-sm mb-4" style="background: #f0f7ff;">
+            <div class="card-body">
+                <div class="d-flex align-items-center mb-2">
+                    <span class="me-2">💡</span>
+                    <h6 class="fw-bold mb-0 text-primary">AI Insights</h6>
+                </div>
+                <p id="summaryText" class="small mb-0 text-dark" style="line-height: 1.6;"></p>
+            </div>
+        </div>
+
+        <h6 class="fw-bold mb-3 d-flex justify-content-between">
+            Found Ingredients 
+            <span id="ingredientCount" class="badge bg-secondary rounded-pill">0</span>
+        </h6>
+        <div id="ingredientsContainer">
+            </div>
+    </div>
+</div>
+
+<script>
+async function processImage(input) {
+    if (!input.files || !input.files[0]) return;
+
+    const loader = document.getElementById('loader');
+    const resultDiv = document.getElementById('results');
+    const container = document.getElementById('ingredientsContainer');
+    const summaryText = document.getElementById('summaryText');
+    const countBadge = document.getElementById('ingredientCount');
+
+    // UI State: Reset
+    loader.classList.remove('d-none');
+    resultDiv.classList.add('d-none');
+    container.innerHTML = '';
+
+    const formData = new FormData();
+    formData.append('image', input.files[0]);
+
+    try {
+        const response = await fetch('/scanner/api/run-piepline/', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': '{{ csrf_token }}' }
+        });
+
+        const data = await response.json();
+        
+        if (response.ok) {
+            summaryText.innerText = data.summary;
+            countBadge.innerText = data.analysis.length;
+
+            data.analysis.forEach(item => {
+                const isHarmful = item.isHarmful;
+                const riskClass = isHarmful ? 'risk-high' : 'risk-low';
+                const badgeClass = isHarmful ? 'bg-danger' : 'bg-success';
+                const riskPercent = (item.riskScore / 10) * 100;
+
+                const card = document.createElement('div');
+                card.className = `card border-0 shadow-sm mb-3 p-3 ingredient-card ${riskClass}`;
+                
+                card.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="fw-bold text-dark">${item.name}</div>
+                            <small class="text-muted d-block mb-2">${item.harmfulEffects}</small>
+                        </div>
+                        <span class="badge ${badgeClass}">${isHarmful ? 'Flagged' : 'Safe'}</span>
+                    </div>
+                    <div class="mt-1">
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span>Risk Level</span>
+                            <span>${item.riskScore}/10</span>
+                        </div>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar ${badgeClass}" style="width: ${riskPercent}%"></div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+            resultDiv.classList.remove('d-none');
+            // Scroll to results
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            alert("Analysis failed: " + (data.message || data.error));
+        }
+    } catch (err) {
+        alert("Server connection error. Please try again.");
+        console.error(err);
+    } finally {
+        loader.classList.add('d-none');
+        input.value = ""; 
+    }
+}
+</script>
+{% endblock %}

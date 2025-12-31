@@ -143,3 +143,71 @@ def analyze_ingredients_api(request):
     except Exception as e:
         logger.error(f"Unexpected Error: {str(e)}")
         return JsonResponse({"error": "An internal error occurred"}, status=500) 
+    
+@csrf_exempt
+def scanner_pipeline_api(request):
+    """
+    Combined Endpoint: Image -> Extraction -> Toxicology Analysis
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "POST only"}, status=405)
+
+    image_file = request.FILES.get('image')
+    if not image_file:
+        return JsonResponse({"error": "No image provided"}, status=400)
+
+    try:
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        image_bytes = image_file.read()
+
+        # --- STEP 1: EXTRACTION (Vision) ---
+        extraction_prompt = """
+        Analyze this product label image. Identify the 'category' and list all 'ingredients' found.
+        Return ONLY a JSON object: {"category": "string", "ingredients": ["list"], "found": bool}
+        """
+
+        extraction_resp = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'), extraction_prompt]
+        )
+
+        # Basic validation for extraction
+        if not extraction_resp.text:
+            return JsonResponse({"error": "OCR failed: Image unreadable"}, status=422)
+        
+        raw_extraction = extraction_resp.text.strip()
+        if raw_extraction.startswith("```json"):
+            raw_extraction = raw_extraction.replace("```json", "").replace("```", "").strip()
+        
+        extracted_data = json.loads(raw_extraction)
+        ingredients = extracted_data.get('ingredients', [])
+
+        if not ingredients:
+            return JsonResponse({"error": "No ingredients detected"}, status=422)
+
+        # --- STEP 2: TOXICOLOGY ANALYSIS (Reasoning) ---
+        analysis_resp = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=f"Analyze these ingredients: {ingredients}",
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type='application/json',
+                response_schema=ProductSafetyReport,
+                system_instruction="""
+                You are an official Regulatory Toxicologist. Use ONLY safety data from FDA, ECHA, and WHO.
+                Priority: EU ECHA/CosIng database. Mark isHarmful: false if not officially flagged.
+                """
+            )
+        )
+
+        # Return the final safety report
+        return JsonResponse(json.loads(analysis_resp.text), safe=False)
+
+    except ClientError as e:
+        if "429" in str(e):
+            return JsonResponse({"error": "Rate limit reached. Try again in 30s."}, status=429)
+        logger.error(f"Gemini API Error: {str(e)}")
+        return JsonResponse({"error": "API Error during pipeline"}, status=400)
+    except Exception as e:
+        logger.error(f"Pipeline Crash: {str(e)}")
+        return JsonResponse({"error": "Internal server error"}, status=500)
